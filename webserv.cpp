@@ -81,8 +81,26 @@ void serve_file(int connfd, const std::string& path) {
 // Execute a CGI script and send the output
 void execute_cgi_script(int connfd, const std::string& path) {
     // Assuming the script is executable and prints the correct HTTP headers
-    std::string output = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html><body>Executed CGI</body></html>";
-    write(connfd, output.c_str(), output.length());
+
+    FILE* pipe = popen(path.c_str(), "r");
+    if (!pipe) {
+        std::cerr << "Error executing CGI script\n";
+        return;
+    }
+
+    // Print HTTP headers
+    std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n";
+    write(connfd, response.c_str(), response.length());
+
+    // Read output from the CGI script and send it back to the client
+    char buffer[1024];
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        write(connfd, buffer, strlen(buffer));
+    }
+
+    // Close pipe
+    pclose(pipe);
+
 }
 
 // Function to handle HTTP GET requests
