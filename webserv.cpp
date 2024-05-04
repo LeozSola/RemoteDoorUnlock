@@ -11,6 +11,15 @@
 #include <sys/stat.h>
 #include <dirent.h> // For directory handling
 
+std::string get_server_directory() {
+    char temp[PATH_MAX];
+    if (getcwd(temp, sizeof(temp)) == NULL) {
+        std::cerr << "Error getting current working directory" << std::endl;
+        return "";  // Return an empty string on failure
+    }
+    return std::string(temp) + "/";
+}
+
 // Function to split string by delimiter
 std::vector<std::string> split(const std::string &s, char delimiter) {
     std::vector<std::string> tokens;
@@ -32,11 +41,23 @@ void serve_directory_listing(int connfd, const std::string& path) {
     DIR *dir;
     struct dirent *ent;
     std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n";
-    response += "<html><body><h1>Directory Listing of " + path + "</h1><ul>";
+    std::string server_directory = get_server_directory();
+
+    if (path == server_directory) {
+        response += "<html><body><h1>Welcome to Webserv!</h1><ul>";
+    } else {
+        response += "<html><body><h1>Directory Listing of " + path.substr(server_directory.length()) + "</h1><ul>";
+    }
 
     if ((dir = opendir(path.c_str())) != NULL) {
         while ((ent = readdir(dir)) != NULL) {
-            response += "<li><a href='" + std::string(ent->d_name) + "'>" + std::string(ent->d_name) + "</a></li>";
+            std::string name = std::string(ent->d_name);
+            if (name == "." || name == ".." || name[0] == '.') continue; // Skip . & .. & hidden
+
+            std::string fullPath = path + (path.back() == '/' ? "" : "/") + name;
+            std::string linkPath = fullPath.substr(server_directory.length());  // Strip server directory path for display
+
+            response += "<li><a href='" + linkPath + "'>" + name + "</a></li>";
         }
         closedir(dir);
         response += "</ul></body></html>";
@@ -110,8 +131,20 @@ void handle_get_request(int connfd, const std::string& request) {
     std::string path = request.substr(0, question_mark);
     std::string parameters = question_mark != std::string::npos ? request.substr(question_mark + 1) : "";
 
-    std::string full_path = "data" + path; // Define your server's document root
-    std::cout << "GET Path: " << full_path << std::endl;
+    std::string full_path;
+    if (path.empty() || path == "/") {
+        full_path = get_server_directory();
+    } else {
+        // Ensure the path does not start with "/" before appending
+        if (path[0] != '/') {
+            full_path = get_server_directory() + "/" + path;
+        } else {
+            full_path = get_server_directory() + path;
+        }
+    }
+
+    std::cout << "Full Path: " << full_path << std::endl;
+
 
     if (path.find(".cgi") != std::string::npos) {
         execute_cgi_script(connfd, full_path);
