@@ -10,6 +10,10 @@
 #include <fstream>
 #include <sys/stat.h>
 #include <dirent.h> // For directory handling
+#include <cstdio>
+#include <memory>
+#include <stdexcept>
+#include <array>
 
 std::string get_server_directory() {
     char temp[PATH_MAX];
@@ -124,17 +128,95 @@ void execute_cgi_script(int connfd, const std::string& path) {
 
 }
 
+// Shell helper function
+std::string exec(const char* cmd) {
+    std::array<char, 128> buffer;
+    std::string result;
+    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd, "r"), pclose);
+    if (!pipe) {
+        throw std::runtime_error("popen() failed!");
+    }
+    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+        result += buffer.data();
+    }
+    return result;
+}
+
+// Handles requests 
+void handle_arduino(int connfd, const std::string& path, const std::vector<std::pair<std::string, std::string>>& parameters_split) {
+    const char* device = "/dev/ttyACM0";
+    std::string command = path.substr(1); // Remove leading /
+
+    // Password Checking
+    if (parameters_split.empty() || parameters_split[0].first != "pass") {
+        std::string response = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nIncorrect Unlock Request\nCorrect Format: /unlock?pass=*passcode*";
+        write(connfd, response.c_str(), response.length());
+        return;
+    }
+
+    bool passwordCorrect = (parameters_split[0].first == "pass" && parameters_split[0].second == "1234");
+    if (!passwordCorrect) {
+        std::string response = "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n\r\nFailed Unlock Request\nIncorrect Password :(\nPlease Try Again";
+        write(connfd, response.c_str(), response.length());
+        return;
+    }
+
+    // Setup serial
+    std::string setupCommand = "stty -F " + std::string(device) + " cs8 9600 ignbrk -brkint -imaxbel -opost -onlcr -isig -icanon -iexten -echo -echoe -echok -echoctl -echoke noflsh -ixon -crtscts";
+    exec(setupCommand.c_str());
+
+    // Prepare command to send to Arduino
+    std::string sendCommand = "echo '" + std::string(command) + "' > " + std::string(device);
+    
+    // Execute the command to send data
+    std::string output = exec(sendCommand.c_str());
+
+    // Check for errors (simplified check, consider improving error handling)
+    if (output.empty()) {
+        std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nCommand sent to Arduino.";
+        write(connfd, response.c_str(), response.length());
+    } else {
+        std::string response = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nFailed to send command to Arduino. Error: " + output;
+        write(connfd, response.c_str(), response.length());
+    }
+}
+
 // Function to handle HTTP GET requests
 void handle_get_request(int connfd, const std::string& request) {
     std::cout << "Handling GET request: " << request << std::endl;
     size_t question_mark = request.find('?');
     std::string path = request.substr(0, question_mark);
     std::string parameters = question_mark != std::string::npos ? request.substr(question_mark + 1) : "";
-
+    // Parameters just splits at ?, still needs & splits
 
     std::cout << "Path: " << path << std::endl;
     std::string server_directory = get_server_directory();
     std::string full_path;
+    std::cout << "Parameters: " << parameters << std::endl;
+
+    // Split parameters into (name, value) pairs
+    std::vector<std::pair<std::string, std::string>> parameters_split;
+    std::vector<std::string> pairs = split(parameters, '&');
+
+    // For each "name=value" in pairs -> (name, value)
+    for (const auto& pair : pairs) {
+        size_t eq_pos = pair.find('=');
+        if (eq_pos != std::string::npos) {
+            std::string name = pair.substr(0, eq_pos);
+            std::string value = pair.substr(eq_pos + 1);
+            parameters_split.emplace_back(name, value);
+        }
+    }
+
+    // parameters_split displayed parameters
+    for (const auto& param : parameters_split) {
+        std::cout << "Parameter name: " << param.first << ", value: " << param.second << std::endl;
+    }
+
+    if (path == "/unlock" || path == "/lock") {
+        handle_arduino(connfd, path, parameters_split);
+        return;
+    }
 
     if (path.empty() || path == "/") {
         full_path = server_directory;
