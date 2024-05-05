@@ -131,15 +131,19 @@ void handle_get_request(int connfd, const std::string& request) {
     std::string path = request.substr(0, question_mark);
     std::string parameters = question_mark != std::string::npos ? request.substr(question_mark + 1) : "";
 
+
+    std::cout << "Path: " << path << std::endl;
+    std::string server_directory = get_server_directory();
     std::string full_path;
+
     if (path.empty() || path == "/") {
-        full_path = get_server_directory();
+        full_path = server_directory;
     } else {
-        // Ensure the path does not start with "/" before appending
-        if (path[0] != '/') {
-            full_path = get_server_directory() + "/" + path;
+        // Remove leading slash from path to avoid doubles
+        if (path[0] == '/') {
+            full_path = server_directory + path.substr(1);
         } else {
-            full_path = get_server_directory() + path;
+            full_path = server_directory + path;
         }
     }
 
