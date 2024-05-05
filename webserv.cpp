@@ -128,7 +128,7 @@ void execute_cgi_script(int connfd, const std::string& path) {
 
 }
 
-// shell helper function
+// Shell helper function
 std::string exec(const char* cmd) {
     std::array<char, 128> buffer;
     std::string result;
@@ -143,11 +143,25 @@ std::string exec(const char* cmd) {
 }
 
 // Handles requests 
-void handle_arduino(int connfd) {
+void handle_arduino(int connfd, const std::string& path, const std::vector<std::pair<std::string, std::string>>& parameters_split) {
     const char* device = "/dev/ttyACM0";
-    const char* command = "unlock";
+    std::string command = path.substr(1); // Remove leading /
 
-    // Setup
+    // Password Checking
+    if (parameters_split.empty() || parameters_split[0].first != "pass") {
+        std::string response = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nIncorrect Unlock Request\nCorrect Format: /unlock?pass=*passcode*";
+        write(connfd, response.c_str(), response.length());
+        return;
+    }
+
+    bool passwordCorrect = (parameters_split[0].first == "pass" && parameters_split[0].second == "1234");
+    if (!passwordCorrect) {
+        std::string response = "HTTP/1.1 403 Forbidden\r\nContent-Type: text/plain\r\n\r\nFailed Unlock Request\nIncorrect Password :(\nPlease Try Again";
+        write(connfd, response.c_str(), response.length());
+        return;
+    }
+
+    // Setup serial
     std::string setupCommand = "stty -F " + std::string(device) + " cs8 9600 ignbrk -brkint -imaxbel -opost -onlcr -isig -icanon -iexten -echo -echoe -echok -echoctl -echoke noflsh -ixon -crtscts";
     exec(setupCommand.c_str());
 
@@ -159,7 +173,7 @@ void handle_arduino(int connfd) {
 
     // Check for errors (simplified check, consider improving error handling)
     if (output.empty()) {
-        std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nUnlock command sent to Arduino.";
+        std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\nCommand sent to Arduino.";
         write(connfd, response.c_str(), response.length());
     } else {
         std::string response = "HTTP/1.1 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nFailed to send command to Arduino. Error: " + output;
@@ -199,8 +213,8 @@ void handle_get_request(int connfd, const std::string& request) {
         std::cout << "Parameter name: " << param.first << ", value: " << param.second << std::endl;
     }
 
-    if (path == "/unlock") {
-        handle_arduino(connfd);
+    if (path == "/unlock" || path == "/lock") {
+        handle_arduino(connfd, path, parameters_split);
         return;
     }
 
