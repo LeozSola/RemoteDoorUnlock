@@ -99,29 +99,127 @@ void serve_file(int connfd, const std::string& path) {
     file.close();
 }
 
+// URL decode function
+std::string url_decode(const std::string& encoded_str) {
+    std::string decoded_str;
+    for (size_t i = 0; i < encoded_str.size(); ++i) {
+        if (encoded_str[i] == '%') {
+            int char_code;
+            sscanf(encoded_str.substr(i + 1, 2).c_str(), "%x", &char_code);
+            decoded_str += static_cast<char>(char_code);
+            i += 2;
+        } else if (encoded_str[i] == '+') {
+            decoded_str += ' ';
+        } else {
+            decoded_str += encoded_str[i];
+        }
+    }
+    return decoded_str;
+}
+
+
 // Execute a CGI script and send the output
-void execute_cgi_script(int connfd, const std::string& path) {
-    // Assuming the script is executable and prints the correct HTTP headers
+void execute_cgi_script(int connfd, const std::string& path, const std::string& parameters) {
+    // Check if the script is generating a plot
 
-    FILE* pipe = popen(path.c_str(), "r");
-    if (!pipe) {
-        std::cerr << "Error executing CGI script\n";
-        return;
+    std::string decoded_parameters = url_decode(parameters);
+
+    setenv("QUERY_STRING", decoded_parameters.c_str(), 1);
+
+    if (path.find("generateHist.cgi") != std::string::npos) {
+        // Open a pipe to my_histogram.py
+        if (parameters.empty()) {
+            std::string error_message = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nUsage: ?directory=<directory_path>\n";
+            write(connfd, error_message.c_str(), error_message.length());
+            return;
+        }
+
+        bool valid_params = false;
+        std::string directory;
+        std::vector<std::string> param_parts = split(parameters, '=');
+        if (param_parts.size() != 2) {
+            std::string error_message = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nError: Invalid parameter format.\nUsage: ?directory=<directory_path>\n";
+            write(connfd, error_message.c_str(), error_message.length());
+            return;
+        }
+        if (param_parts[0] == "directory") {
+            directory = url_decode(param_parts[1]);
+            valid_params = true;
+        }
+
+        if (!valid_params) {
+            std::string error_message = "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nError: No directory specified.\nUsage: ?directory=<directory_path>\n";
+            write(connfd, error_message.c_str(), error_message.length());
+            return;
+        }
+
+        std::cout << "Directory " << directory.c_str() << std::endl;
+
+        if (!is_directory(directory)) {
+            std::string error_message = "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\n\r\nError: Invalid directory specified.\nUsage: ?directory=<directory_path>\n";
+            write(connfd, error_message.c_str(), error_message.length());
+            return;
+        }
+
+        if (directory == "/") {
+            directory = "/home/amv1225/CS410/PS3";
+        } else if (directory == "/.") {
+            directory = "/home/amv1225/CS410/PS3/data";
+        } else if (directory == "/..") {
+            directory = "/home/amv1225/CS410/PS3";
+        }
+
+        FILE* pipe = popen(("python3 my_histogram.py " + directory).c_str(), "r");
+        if (!pipe) {
+            std::cerr << "Error executing CGI script\n";
+            return;
+        }
+
+        // Read the output from the pipe and write it to a temporary file
+        std::ofstream temp_file("plot.jpeg", std::ios::binary);
+        char buffer[1024];
+        while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+            temp_file.write(buffer, strlen(buffer));
+        }
+        temp_file.close();
+
+        // Close the pipe
+        pclose(pipe);
+
+        // Generate HTML content with embedded image
+        std::string html_response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n";
+        html_response += "<html><body style='background-color:white;text-align:center;'>\n";
+        html_response += "<h1 style='color:red;font-size:16pt;'>CS410 Webserver</h1>\n";
+        html_response += "<br/>\n";
+        html_response += "<img src='/plot.jpeg' alt='Histogram'/>\n";
+        html_response += "</body></html>\n";
+
+        // Send HTML response
+        write(connfd, html_response.c_str(), html_response.length());
+
+
+    } else {
+        // Assuming the script is executable
+
+        FILE* pipe = popen(path.c_str(), "r");
+        if (!pipe) {
+            std::cerr << "Error executing CGI script\n";
+            return;
+        }
+
+        // Print HTTP headers
+        std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n";
+        write(connfd, response.c_str(), response.length());
+
+        // Read output from the CGI script and send it back to the client
+        char buffer[1024];
+        while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+            write(connfd, buffer, strlen(buffer));
+        }
+
+        // Close the pipe
+        pclose(pipe);
     }
-
-    // Print HTTP headers
-    std::string response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n";
-    write(connfd, response.c_str(), response.length());
-
-    // Read output from the CGI script and send it back to the client
-    char buffer[1024];
-    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
-        write(connfd, buffer, strlen(buffer));
-    }
-
-    // Close pipe
-    pclose(pipe);
-
 }
 
 // Function to handle HTTP GET requests
@@ -151,7 +249,7 @@ void handle_get_request(int connfd, const std::string& request) {
 
 
     if (path.find(".cgi") != std::string::npos) {
-        execute_cgi_script(connfd, full_path);
+        execute_cgi_script(connfd, full_path, parameters);
     } else {
         serve_file(connfd, full_path);
     }
@@ -205,11 +303,30 @@ void handle_request(int connfd) {
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
-        std::cerr << "Usage: ./webserv <port>\n";
+        std::cerr << "Usage: ./webserv <ip_address>:<port>\n";
         return 1;
     }
 
-    int port = atoi(argv[1]);
+    std::string ip_port_str(argv[1]);
+
+    // Split the argument into IP address and port number
+    size_t colon_pos = ip_port_str.find(':');
+    std::string ip_address;
+    std::string port_str;
+    int port;
+
+    if (colon_pos != std::string::npos) {
+        // IP address and port number provided
+        ip_address = ip_port_str.substr(0, colon_pos);
+        port_str = ip_port_str.substr(colon_pos + 1);
+        port = atoi(port_str.c_str());
+    } else {
+        // Only port number provided, default IP address to INADDR_ANY
+        ip_address = "0.0.0.0"; // Default to localhost
+        port_str = ip_port_str;
+        port = atoi(port_str.c_str());
+    }
+
     int sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (sockfd < 0) {
         std::cerr << "Error creating socket\n";
@@ -219,7 +336,7 @@ int main(int argc, char* argv[]) {
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
+    addr.sin_addr.s_addr = inet_addr(ip_address.c_str());
     addr.sin_port = htons(port);
 
     if (bind(sockfd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
@@ -227,12 +344,12 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    std::cout << "Server is listening on http://" << ip_address << ":" << port << std::endl;
+
     if (listen(sockfd, 10) < 0) {
         std::cerr << "Error listening on socket\n";
         return 1;
     }
-
-    std::cout << "Server is listening on http://" << inet_ntoa(addr.sin_addr) << ":" << port << std::endl;
 
     while (true) {
         int connfd = accept(sockfd, (struct sockaddr*)NULL, NULL);

@@ -6,10 +6,6 @@ use warnings;
 # Get the raw data from the query string
 my $raw_data = $ENV{'QUERY_STRING'};
 
-# Print out the value of the QUERY_STRING for debugging
-print "Content-type: text/plain\n\n";
-print "QUERY_STRING: $raw_data\n";  # Print out the value of the QUERY_STRING for debugging
-
 # Process the raw data (you can modify this as needed)
 my $processed_data = "Processed data: $raw_data";
 
